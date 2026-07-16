@@ -4,6 +4,7 @@ import net.runelite.client.config.Alpha;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.Range;
 
 import java.awt.*;
 
@@ -77,5 +78,21 @@ public interface StackValueConfig extends Config
 	default Color getLegendaryItemColor()
 	{
 		return new Color(255 / 255f, 120 / 255f, 0 / 255f, 195 / 255f);
+	}
+
+	@ConfigItem(keyName = "f-showFill", name = "Fill",
+			description = "Shade items with their value color, on top of the outline", position = 10)
+	default boolean showFill()
+	{
+		return false;
+	}
+
+	@Range(min = 0, max = 255)
+	@ConfigItem(keyName = "g-fillOpacity", name = "Fill Opacity",
+			description = "How strongly items are shaded. 0 draws no fill; 255 replaces the item's "
+					+ "colors entirely, leaving only its shape", position = 11)
+	default int getFillOpacity()
+	{
+		return 128;
 	}
 }

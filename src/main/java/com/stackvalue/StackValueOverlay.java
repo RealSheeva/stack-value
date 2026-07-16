@@ -1,85 +1,144 @@
 package com.stackvalue;
 
-// External
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import com.google.inject.Inject;
-import lombok.extern.slf4j.Slf4j;
+import lombok.Value;
 
-// Inventory/Items
-import net.runelite.api.ItemComposition;
 import net.runelite.api.widgets.WidgetItem;
-import net.runelite.client.ui.overlay.WidgetItemOverlay;
-
-// UI
 import net.runelite.client.game.ItemManager;
+import net.runelite.client.ui.overlay.WidgetItemOverlay;
+import net.runelite.client.util.AsyncBufferedImage;
+import net.runelite.client.util.ColorUtil;
+import net.runelite.client.util.ImageUtil;
 
-
-
-import java.awt.*;
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.Image;
+import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
 
-
-@Slf4j
 public class StackValueOverlay extends WidgetItemOverlay
 {
-    private static final int INVENTORY_SIZE = 28;
+	private final StackValuePlugin plugin;
+	private final StackValueConfig config;
+	private final ItemManager itemManager;
 
-    private final StackValuePlugin plugin;
-    private final ItemManager itemManager;
+	/**
+	 * Shading an item recolors every pixel of its sprite, which is far too slow to redo each frame
+	 * for a full bank. Keyed on color as well as item, so a re-tiered or recolored item misses the
+	 * cache and is redrawn rather than served stale.
+	 */
+	private final Cache<FillKey, Image> fillCache;
 
-    @Inject
-    private StackValueOverlay(StackValuePlugin plugin, ItemManager itemManager)
-    {
-        this.plugin = plugin;
-        this.itemManager = itemManager;
+	@Inject
+	private StackValueOverlay(StackValuePlugin plugin, StackValueConfig config, ItemManager itemManager)
+	{
+		this.plugin = plugin;
+		this.config = config;
+		this.itemManager = itemManager;
 
-        showOnEquipment();
-        showOnInventory();
-        showOnBank();
-    }
+		showOnEquipment();
+		showOnInventory();
+		showOnBank();
 
-    private int itemPrice(int itemId)
-    {
-        // Used to get High Alch Price
-        ItemComposition itemDef = itemManager.getItemComposition(itemId);
+		fillCache = CacheBuilder.newBuilder()
+				.concurrencyLevel(1)
+				.maximumSize(256)
+				.build();
+	}
 
-        // Get GE price and High Alch Price
-        int gePrice = itemManager.getItemPrice(itemId);
+	@Override
+	public void renderItemOverlay(Graphics2D graphics, int itemId, WidgetItem itemWidget)
+	{
+		final int quantity = itemWidget.getQuantity();
+		final Color color = plugin.getValueColor(stackValue(itemId, quantity));
 
-        // Store Price
-        int storePrice = itemDef.getPrice();
+		// A fully transparent tier color is how a tier is hidden, so skip the whole item.
+		if (color == null || color.getAlpha() == 0)
+		{
+			return;
+		}
 
-        // High Alch Price
-        int haPrice = itemDef.getHaPrice();
+		final Rectangle bounds = itemWidget.getCanvasBounds();
+		final int x = (int) bounds.getX();
+		final int y = (int) bounds.getY();
 
-        int maxPrice = Integer.max(gePrice, haPrice);
+		final BufferedImage outline = itemManager.getItemOutline(itemId, quantity, color);
+		if (outline != null)
+		{
+			graphics.drawImage(outline, x, y, null);
+		}
 
-        //return Integer.max(maxPrice, storePrice);
+		final int opacity = config.getFillOpacity();
+		if (!config.showFill() || opacity <= 0)
+		{
+			return;
+		}
 
-        return(gePrice);
-    }
+		// The slider sets the fill's transparency outright, independent of the tier color's own
+		// alpha, so it can run from invisible up to completely replacing the item's colors.
+		final Image fill = fill(itemId, quantity, ColorUtil.colorWithAlpha(color, opacity));
+		if (fill != null)
+		{
+			graphics.drawImage(fill, x, y, null);
+		}
+	}
 
-    @Override
-    public void renderItemOverlay(Graphics2D graphics, int itemId, WidgetItem itemWidget)
-    {
-        int price = itemPrice(itemId);
+	/**
+	 * Value of a whole stack. Widened to a long because a single stack can exceed the range of an
+	 * int, which would wrap negative and drop the item into the lowest tier.
+	 */
+	private long stackValue(int itemId, int quantity)
+	{
+		return (long) itemManager.getItemPrice(itemId) * quantity;
+	}
 
+	private Image fill(int itemId, int quantity, Color color)
+	{
+		final FillKey key = new FillKey(itemId, quantity, color.getRGB());
 
+		final Image cached = fillCache.getIfPresent(key);
+		if (cached != null)
+		{
+			return cached;
+		}
 
-        price = price * itemWidget.getQuantity();
+		final AsyncBufferedImage sprite = itemManager.getImage(itemId, quantity, false);
 
-        // Get Rarity Color
-        final Color color = plugin.getRarityColor(price);
+		// Sprites load in the background and are blank until they arrive. Caching one now would pin
+		// an empty fill in place, so draw nothing and let a later frame build it for real.
+		if (sprite == null || isBlank(sprite))
+		{
+			return null;
+		}
 
-        // Null check and alpha optimization
-        if (color == null || color.getAlpha() == 0)
-        {
-            return;
-        }
+		final Image fill = ImageUtil.fillImage(sprite, color);
+		fillCache.put(key, fill);
+		return fill;
+	}
 
+	private static boolean isBlank(BufferedImage image)
+	{
+		for (int x = 0; x < image.getWidth(); x++)
+		{
+			for (int y = 0; y < image.getHeight(); y++)
+			{
+				if ((image.getRGB(x, y) >>> 24) != 0)
+				{
+					return false;
+				}
+			}
+		}
 
-        Rectangle bounds = itemWidget.getCanvasBounds();
+		return true;
+	}
 
-        final BufferedImage outline = itemManager.getItemOutline(itemId, itemWidget.getQuantity(), color);
-        graphics.drawImage(outline, (int)bounds.getX(), (int)bounds.getY(), null);
-    }
+	@Value
+	private static class FillKey
+	{
+		int itemId;
+		int quantity;
+		int rgb;
+	}
 }
